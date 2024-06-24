@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,73 +12,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM nvcr.io/nvidia/cuda:11.1.1-runtime-ubuntu20.04
+ARG PYTORCH_VERSION=22.09
 
-MAINTAINER PyTorchLightning <https://github.com/PyTorchLightning>
+# https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes
+FROM nvcr.io/nvidia/pytorch:${PYTORCH_VERSION}-py3
+
+LABEL maintainer="Lightning-AI <https://github.com/Lightning-AI>"
 
 ARG LIGHTNING_VERSION=""
 
-SHELL ["/bin/bash", "-c"]
-# https://techoverflow.net/2019/05/18/how-to-fix-configuring-tzdata-interactive-input-when-building-docker-images/
-ENV \
-    DEBIAN_FRONTEND=noninteractive \
-    TZ=Europe/Prague \
-    PATH="$PATH:/root/.local/bin" \
-    CUDA_TOOLKIT_ROOT_DIR="/usr/local/cuda" \
-    MKL_THREADING_LAYER=GNU
+RUN python -c "import torch ; print(torch.__version__)" >> torch_version.info
 
-RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        python3 \
-        python3-distutils \
-        python3-dev \
-        pkg-config \
-        cmake \
-        git \
-        wget \
-        unzip \
-        ca-certificates \
-    && \
-
-# Cleaning
-    apt-get autoremove -y && \
-    apt-get clean && \
-    rm -rf /root/.cache && \
-    rm -rf /var/lib/apt/lists/* && \
-
-# Setup PIP
-    update-alternatives --install /usr/bin/python python /usr/bin/python3 1 && \
-    wget https://bootstrap.pypa.io/get-pip.py --progress=bar:force:noscroll --no-check-certificate && \
-    python get-pip.py && \
-    rm get-pip.py && \
-    pip --version
-
-COPY ./ /home/pytorch-lightning/
+COPY ./ /workspace/pytorch-lightning/
 
 RUN \
-    cd /home  && \
-    mv pytorch-lightning/notebooks . && \
-    mv pytorch-lightning/pl_examples . && \
+    cd /workspace  && \
     # replace by specific version if asked
     if [ ! -z "$LIGHTNING_VERSION" ] ; then \
         rm -rf pytorch-lightning ; \
-        wget https://github.com/PyTorchLightning/pytorch-lightning/archive/${LIGHTNING_VERSION}.zip --progress=bar:force:noscroll ; \
-        unzip ${LIGHTNING_VERSION}.zip ; \
-        mv pytorch-lightning-*/ pytorch-lightning ; \
-        rm *.zip ; \
+        git clone https://github.com/Lightning-AI/pytorch-lightning.git ; \
+        cd pytorch-lightning ; \
+        git checkout ${LIGHTNING_VERSION} ; \
+        git submodule update --init --recursive ; \
+        cd .. ; \
     fi && \
+# save the examples \
+    ls -lh pytorch-lightning/ && \
+    rm -rf pytorch-lightning/.git && \
+    rm -rf pytorch-lightning/_notebooks/.git && \
+    mv pytorch-lightning/_notebooks/.notebooks/ notebooks && \
+    cp -r pytorch-lightning/*examples . && \
 
-# Installations
-    python -c "fname = './pytorch-lightning/requirements/extra.txt' ; lines = [line for line in open(fname).readlines() if not line.startswith('horovod')] ; open(fname, 'w').writelines(lines)" && \
-    pip install -r ./pytorch-lightning/requirements/extra.txt -U --no-cache-dir && \
-    pip install -r ./pytorch-lightning/requirements/examples.txt -U --no-cache-dir && \
-    pip install ./pytorch-lightning --no-cache-dir && \
-    rm -rf pytorch-lightning
+# Installations \
+    pip install "Pillow>=8.2, !=8.3.0" "cryptography>=3.4" "py>=1.10" --no-cache-dir && \
+    PACKAGE_NAME=pytorch pip install './lightning[extra,loggers,strategies]' --no-cache-dir && \
+    rm -rf pytorch-lightning && \
+    pip list
 
-RUN python --version && \
+RUN pip install jupyterlab[all] -U --no-cache-dir
+
+# create jupyter_notebook_config.py
+RUN mkdir -p /root/.jupyter && \
+    echo "c.NotebookApp.contents_manager_class = 'notebook.services.contents.largefilemanager.LargeFileManager'" > /root/.jupyter/jupyter_notebook_config.py
+
+ENV PYTHONPATH="/workspace"
+
+RUN \
+    TORCH_VERSION=$(cat torch_version.info) && \
+    rm torch_version.info && \
+    ls -lh . && \
+    python --version && \
     pip --version && \
-    pip list && \
+    pip list | grep torch && \
+    python -c "import torch; assert torch.__version__.startswith('$TORCH_VERSION'), torch.__version__" && \
     python -c "import pytorch_lightning as pl; print(pl.__version__)"
 
-# CMD ["/bin/bash"]
+CMD ["jupyter", "notebook", "--port=8888", "--no-browser", "--ip=0.0.0.0", "--allow-root"]
